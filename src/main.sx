@@ -876,7 +876,7 @@ fn update_wave(game: mut Recubedoom, dt: f32) void = {
     }
     if game.wave_timer <= (0.0 as f32) {
         game.wave_timer = 2.3 as f32
-        game.score = game.score + 150
+        game.score += 150
         game.kill_flash = 1.0 as f32
         spawn_explosion(game, game.px, EYE_HEIGHT, game.pz, false)
     } else {
