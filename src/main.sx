@@ -1,0 +1,1433 @@
+val math      = use("std/math")
+val ecs       = use("../lib/exo/src/ecs.sx")
+val engine    = use("../lib/exo/src/engine.sx")
+val rendering = use("../lib/exo/src/rendering.sx")
+val sdl       = use("../lib/exo/src/engine/sdl.sx")
+val input     = use("../lib/exo/src/engine/input.sx")
+val audio     = use("../lib/exo/src/engine/audio.sx")
+
+val MAP_SIZE: i32 = 20
+val TILE: f32 = 2.4 as f32
+val WALL_HEIGHT: f32 = 2.4 as f32
+val EYE_HEIGHT: f32 = 1.54 as f32
+val PLAYER_RADIUS: f32 = 0.32 as f32
+val PLAYER_SPEED: f32 = 5.7 as f32
+val PLAYER_TURN_SPEED: f32 = 2.1 as f32
+val MAX_HEALTH: i32 = 100
+val START_WAVE: i32 = 1
+val ENEMY_COUNT: i32 = 6
+val ENEMY_RADIUS: f32 = 0.56 as f32
+val ENEMY_SPEED: f32 = 1.70 as f32
+val MILLI: f32 = 0.001 as f32
+val BULLET_SPEED: f32 = 27.0 as f32
+val ENEMY_BULLET_SPEED: f32 = 8.7 as f32
+val PLAYER_FIRE_COOLDOWN: f32 = 0.155 as f32
+val MAX_BULLETS: i32 = 48
+val MAX_SPARKS: i32 = 150
+val PI: f32 = 3.14159265 as f32
+
+type Bullet = {
+    x: mut f32
+    y: mut f32
+    z: mut f32
+    vx: mut f32
+    vy: mut f32
+    vz: mut f32
+    life: mut f32
+    friendly: bool
+}
+
+type Enemy = {
+    x: mut f32
+    z: mut f32
+    health: mut i32
+    max_health: i32
+    alive: mut bool
+    shoot_timer: mut f32
+    hit_flash: mut f32
+    contact_cd: mut f32
+    phase: f32
+}
+
+type Spark = {
+    x: mut f32
+    y: mut f32
+    z: mut f32
+    vx: mut f32
+    vy: mut f32
+    vz: mut f32
+    life: mut f32
+    max_life: f32
+    r: f32
+    g: f32
+    b: f32
+    size: f32
+    gravity: f32
+}
+
+type (engine.AppEvents) Recubedoom = {
+    rows: list[ref u8]
+    px: mut f32
+    pz: mut f32
+    yaw: mut f32
+    pitch: mut f32
+    health: mut i32
+    score: mut i32
+    best: mut i32
+    kills: mut i32
+    wave: mut i32
+    state: mut i32
+    enemies: mut list[Enemy]
+    bullets: mut list[Bullet]
+    sparks: mut list[Spark]
+    fire_cd: mut f32
+    muzzle: mut f32
+    hurt: mut f32
+    kill_flash: mut f32
+    wave_timer: mut f32
+    walk: mut f32
+    bob: mut f32
+    shake: mut f32
+    recoil: mut f32
+    invuln: mut f32
+    fx_enabled: mut bool
+    hud: mut ref u8
+    msg: mut ref u8
+}
+
+fn fabs_f32(v: f32) f32 = {
+    return math.fabs(v as f64) as f32
+}
+
+fn clampf(v: f32, lo: f32, hi: f32) f32 = {
+    if v < lo {
+        return lo
+    }
+    if v > hi {
+        return hi
+    }
+    return v
+}
+
+fn rand01(seed: i32) f32 = {
+    val v: f64 = math.sin((seed as f64) * (12.9898 as f64)) * (43758.5453 as f64)
+    return (v - math.floor(v)) as f32
+}
+
+fn is_key_held(app: engine.ExoApp, key: i32) bool = {
+    return trust engine.key_held(app, key)
+}
+
+fn map_rows() list[ref u8] = {
+    val rows: mut list[ref u8] = []
+    @append(rows, "####################")
+    @append(rows, "#....#.............#")
+    @append(rows, "#.##.#.########.##.#")
+    @append(rows, "#.##...#......#.##.#")
+    @append(rows, "#....#.#.####.#....#")
+    @append(rows, "###.##.#.#..#.###.##")
+    @append(rows, "#........#..#......#")
+    @append(rows, "#.######.#..######.#")
+    @append(rows, "#.#..............#.#")
+    @append(rows, "#.#.##.##..##.##.#.#")
+    @append(rows, "#...##.##..##.##...#")
+    @append(rows, "#.#..............#.#")
+    @append(rows, "#.######.#########.#")
+    @append(rows, "#..................#")
+    @append(rows, "######.######.######")
+    @append(rows, "#....#.#....#.#....#")
+    @append(rows, "#.##...#.##.#...##.#")
+    @append(rows, "#.##.###.##.###.##.#")
+    @append(rows, "#..................#")
+    @append(rows, "####################")
+    return rows
+}
+
+fn cell_char(rows: list[ref u8], cx: i32, cz: i32) u8 = {
+    if cx < (0 as i32) || cx >= MAP_SIZE || cz < (0 as i32) || cz >= MAP_SIZE {
+        return 35 as u8
+    }
+    if @get(rows, cz as usize) is some row {
+        return trust @load8(@ptradd(row, cx as usize))
+    }
+    return 35 as u8
+}
+
+fn is_wall_cell(rows: list[ref u8], cx: i32, cz: i32) bool = {
+    return cell_char(rows, cx, cz) == (35 as u8)
+}
+
+fn world_x(cell: f32) f32 = {
+    return (cell + (0.5 as f32)) * TILE
+}
+
+fn world_z(cell: f32) f32 = {
+    return (cell + (0.5 as f32)) * TILE
+}
+
+fn is_wall_world(rows: list[ref u8], x: f32, z: f32) bool = {
+    val cx: i32 = (x / TILE) as i32
+    val cz: i32 = (z / TILE) as i32
+    return is_wall_cell(rows, cx, cz)
+}
+
+fn blocked_circle(rows: list[ref u8], x: f32, z: f32, radius: f32) bool = {
+    if is_wall_world(rows, x - radius, z - radius) {
+        return true
+    }
+    if is_wall_world(rows, x + radius, z - radius) {
+        return true
+    }
+    if is_wall_world(rows, x - radius, z + radius) {
+        return true
+    }
+    if is_wall_world(rows, x + radius, z + radius) {
+        return true
+    }
+    if is_wall_world(rows, x - radius, z) {
+        return true
+    }
+    if is_wall_world(rows, x + radius, z) {
+        return true
+    }
+    if is_wall_world(rows, x, z - radius) {
+        return true
+    }
+    if is_wall_world(rows, x, z + radius) {
+        return true
+    }
+    return false
+}
+
+fn has_line_of_sight(rows: list[ref u8], x0: f32, z0: f32, x1: f32, z1: f32) bool = {
+    val steps: f32 = 26.0 as f32
+    val i: mut i32 = 1 as i32
+    for i < 26 {
+        val t: f32 = (i as f32) / steps
+        val x: f32 = x0 + (x1 - x0) * t
+        val z: f32 = z0 + (z1 - z0) * t
+        if is_wall_world(rows, x, z) {
+            return false
+        }
+        i = i + (1 as i32)
+    }
+    return true
+}
+
+fn dist3(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32) f32 = {
+    val dx: f32 = ax - bx
+    val dy: f32 = ay - by
+    val dz: f32 = az - bz
+    return math.sqrt((dx * dx + dy * dy + dz * dz) as f64) as f32
+}
+
+fn player_eye_y(game: Recubedoom, time: f32) f32 = {
+    val shake: f32 = (math.sin((time * (73.0 as f32)) as f64) as f32) * game.shake * (0.06 as f32)
+    return EYE_HEIGHT + game.bob + shake
+}
+
+fn count_alive(game: Recubedoom) i32 = {
+    val alive: mut i32 = 0 as i32
+    for enemy in game.enemies {
+        if enemy.alive {
+            alive = alive + (1 as i32)
+        }
+    }
+    return alive
+}
+
+fn spawn_wave(game: mut Recubedoom) void = {
+    val enemies: mut list[Enemy] = []
+    val i: mut i32 = 0 as i32
+    for i < ENEMY_COUNT {
+        val cx: mut i32 = 8 as i32
+        val cz: mut i32 = 8 as i32
+        if i == (1 as i32) {
+            cx = 15 as i32
+            cz = 1 as i32
+        } elif i == (2 as i32) {
+            cx = 10 as i32
+            cz = 13 as i32
+        } elif i == (3 as i32) {
+            cx = 5 as i32
+            cz = 3 as i32
+        } elif i == (4 as i32) {
+            cx = 3 as i32
+            cz = 13 as i32
+        } elif i == (5 as i32) {
+            cx = 14 as i32
+            cz = 6 as i32
+        }
+        val hp: i32 = (2 as i32) + game.wave
+        @append(enemies, {
+                x: world_x(cx as f32),
+                z: world_z(cz as f32),
+                health: hp,
+                max_health: hp,
+                alive: true,
+                shoot_timer: (2.4 as f32) + (i as f32) * (0.45 as f32),
+                hit_flash: 0.0 as f32,
+                contact_cd: 0.0 as f32,
+                phase: (i as f32) * (0.93 as f32) + (game.wave as f32) * (0.31 as f32)
+            })
+        i = i + (1 as i32)
+    }
+    game.enemies = enemies
+}
+
+fn reset_state(game: mut Recubedoom) void = {
+    game.px = world_x(3.0 as f32)
+    game.pz = world_z(8.0 as f32)
+    game.yaw = PI * (0.5 as f32)
+    game.pitch = -0.03 as f32
+    game.health = MAX_HEALTH
+    game.score = 0 as i32
+    game.kills = 0 as i32
+    game.wave = START_WAVE
+    game.state = 0 as i32
+    game.fire_cd = 0.0 as f32
+    game.muzzle = 0.0 as f32
+    game.hurt = 0.0 as f32
+    game.kill_flash = 0.0 as f32
+    game.wave_timer = 0.0 as f32
+    game.walk = 0.0 as f32
+    game.bob = 0.0 as f32
+    game.shake = 0.0 as f32
+    game.recoil = 0.0 as f32
+    game.invuln = 2.2 as f32
+    game.bullets = []
+    game.sparks = []
+    spawn_wave(game)
+}
+
+fn make_game(rows: list[ref u8]) Recubedoom = {
+    val game: Recubedoom = {
+        rows: rows,
+        px: world_x(3.0 as f32),
+        pz: world_z(8.0 as f32),
+        yaw: PI * (0.5 as f32),
+        pitch: -0.03 as f32,
+        health: MAX_HEALTH,
+        score: 0 as i32,
+        best: 0 as i32,
+        kills: 0 as i32,
+        wave: START_WAVE,
+        state: 0 as i32,
+        enemies: [],
+        bullets: [],
+        sparks: [],
+        fire_cd: 0.0 as f32,
+        muzzle: 0.0 as f32,
+        hurt: 0.0 as f32,
+        kill_flash: 0.0 as f32,
+        wave_timer: 0.0 as f32,
+        walk: 0.0 as f32,
+        bob: 0.0 as f32,
+        shake: 0.0 as f32,
+        recoil: 0.0 as f32,
+        invuln: 2.2 as f32,
+        fx_enabled: true,
+        hud: none as ref u8,
+        msg: none as ref u8
+    }
+    return game
+}
+
+fn add_spark(
+    game: mut Recubedoom,
+    x: f32,
+    y: f32,
+    z: f32,
+    vx: f32,
+    vy: f32,
+    vz: f32,
+    life: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+    size: f32,
+    gravity: f32
+) void = {
+    if @len(game.sparks) >= (MAX_SPARKS as usize) {
+        return
+    }
+    @append(game.sparks, {
+            x: x,
+            y: y,
+            z: z,
+            vx: vx,
+            vy: vy,
+            vz: vz,
+            life: life,
+            max_life: life,
+            r: r,
+            g: g,
+            b: b,
+            size: size,
+            gravity: gravity
+        })
+}
+
+fn add_bullet(
+    game: mut Recubedoom,
+    x: f32,
+    y: f32,
+    z: f32,
+    vx: f32,
+    vy: f32,
+    vz: f32,
+    life: f32,
+    friendly: bool
+) void = {
+    if @len(game.bullets) >= (MAX_BULLETS as usize) {
+        return
+    }
+    @append(game.bullets, {
+            x: x,
+            y: y,
+            z: z,
+            vx: vx,
+            vy: vy,
+            vz: vz,
+            life: life,
+            friendly: friendly
+        })
+}
+
+fn spawn_impact(game: mut Recubedoom, x: f32, y: f32, z: f32, friendly: bool) void = {
+    val seed: i32 = ((x * (17.0 as f32) + z * (29.0 as f32)) as i32) + game.kills * (13 as i32)
+    val i: mut i32 = 0 as i32
+    for i < 5 {
+        val angle: f32 = (i as f32) * (1.37 as f32) + rand01(seed + i) * (2.2 as f32)
+        val speed: f32 = (1.2 as f32) + rand01(seed + i * (7 as i32)) * (2.8 as f32)
+        val r: f32 = 0.22 as f32
+        val g: f32 = 0.92 as f32
+        val b: f32 = 1.00 as f32
+        if !friendly {
+            add_spark(game, x, y, z,
+                (math.cos(angle as f64) as f32) * speed,
+                (0.6 as f32) + rand01(seed + i * (11 as i32)) * (2.0 as f32),
+                (math.sin(angle as f64) as f32) * speed,
+                (0.18 as f32) + rand01(seed + i * (3 as i32)) * (0.22 as f32),
+                1.00 as f32, 0.26 as f32, 0.68 as f32,
+                (0.045 as f32) + rand01(seed + i) * (0.055 as f32),
+                3.0 as f32)
+        } else {
+            add_spark(game, x, y, z,
+                (math.cos(angle as f64) as f32) * speed,
+                (0.6 as f32) + rand01(seed + i * (11 as i32)) * (2.0 as f32),
+                (math.sin(angle as f64) as f32) * speed,
+                (0.18 as f32) + rand01(seed + i * (3 as i32)) * (0.22 as f32),
+                r, g, b,
+                (0.045 as f32) + rand01(seed + i) * (0.055 as f32),
+                3.0 as f32)
+        }
+        i = i + (1 as i32)
+    }
+}
+
+fn spawn_debris(game: mut Recubedoom, x: f32, y: f32, z: f32, angle: f32, speed: f32, up: f32, seed: i32) void = {
+    val pick: f32 = rand01(seed + (23 as i32))
+    val r: mut f32 = 1.00 as f32
+    val g: mut f32 = 0.42 as f32
+    val b: mut f32 = 0.10 as f32
+    if pick > (0.55 as f32) {
+        g = 0.82 as f32
+        b = 0.24 as f32
+    } else {
+        r = 0.96 as f32
+        g = 0.18 as f32
+        b = 0.12 as f32
+    }
+    add_spark(game, x, y, z,
+        (math.cos(angle as f64) as f32) * speed,
+        up,
+        (math.sin(angle as f64) as f32) * speed,
+        (0.38 as f32) + rand01(seed + (7 as i32)) * (0.55 as f32),
+        r, g, b,
+        (0.06 as f32) + rand01(seed + (13 as i32)) * (0.10 as f32),
+        4.5 as f32)
+}
+
+fn spawn_explosion(game: mut Recubedoom, x: f32, y: f32, z: f32, big: bool) void = {
+    val count: mut i32 = 16 as i32
+    val boost: mut f32 = 1.0 as f32
+    if big {
+        count = 28 as i32
+        boost = 1.8 as f32
+    }
+    val seed: i32 = ((x * (31.0 as f32) + z * (43.0 as f32)) as i32) + game.wave * (17 as i32)
+    val i: mut i32 = 0 as i32
+    for i < count {
+        val angle: f32 = (i as f32) * (0.91 as f32) + rand01(seed + i) * (1.6 as f32)
+        val speed: f32 = ((1.5 as f32) + rand01(seed + i * (5 as i32)) * (4.6 as f32)) * boost
+        val up: f32 = ((1.0 as f32) + rand01(seed + i * (9 as i32)) * (5.2 as f32)) * boost
+        spawn_debris(game, x, y, z, angle, speed, up, seed + i)
+        i = i + (1 as i32)
+    }
+}
+
+fn damage_player(game: mut Recubedoom, app: engine.ExoApp, amount: i32) void = {
+    if game.state != (0 as i32) || game.invuln > (0.0 as f32) {
+        return
+    }
+    game.health = game.health - amount
+    if game.health < (0 as i32) {
+        game.health = 0 as i32
+    }
+    game.hurt = 0.58 as f32
+    game.shake = 0.9 as f32
+    spawn_impact(game, game.px, EYE_HEIGHT, game.pz, false)
+    trust engine.play_sound(app)
+    if game.health <= (0 as i32) {
+        game.state = 1 as i32
+        if game.score > game.best {
+            game.best = game.score
+        }
+        spawn_explosion(game, game.px, EYE_HEIGHT, game.pz, true)
+    }
+}
+
+fn fire_player(game: mut Recubedoom, app: engine.ExoApp) void = {
+    val cp: f32 = math.cos(game.pitch as f64) as f32
+    val fx: f32 = (math.sin(game.yaw as f64) as f32) * cp
+    val fy: f32 = math.sin(game.pitch as f64) as f32
+    val fz: f32 = (math.cos(game.yaw as f64) as f32) * cp
+    val rx: f32 = (0.0 as f32) - (math.cos(game.yaw as f64) as f32)
+    val rz: f32 = math.sin(game.yaw as f64) as f32
+    val eye_y: f32 = EYE_HEIGHT + game.bob
+    val mx: f32 = game.px + fx * (2.35 as f32) + rx * (0.14 as f32)
+    val my: f32 = eye_y + fy * (2.35 as f32) - (0.04 as f32)
+    val mz: f32 = game.pz + fz * (2.35 as f32) + rz * (0.14 as f32)
+    add_bullet(game, mx, my, mz,
+        fx * BULLET_SPEED, fy * BULLET_SPEED, fz * BULLET_SPEED,
+        2.4 as f32, true)
+    game.fire_cd = PLAYER_FIRE_COOLDOWN
+    game.muzzle = 0.085 as f32
+    game.recoil = 1.0 as f32
+    add_spark(game, mx, my, mz, fx * (2.0 as f32), fy * (2.0 as f32), fz * (2.0 as f32),
+        0.07 as f32, 1.00 as f32, 0.86 as f32, 0.36 as f32, 0.06 as f32, 0.0 as f32)
+    val i: mut i32 = 0 as i32
+    for i < 3 {
+        val angle: f32 = (i as f32) * (1.57 as f32) + game.walk
+        add_spark(game, mx, my, mz,
+            fx * (3.5 as f32) + (math.cos(angle as f64) as f32) * (1.6 as f32),
+            fy * (3.0 as f32) + (math.sin(angle as f64) as f32) * (1.4 as f32),
+            fz * (3.5 as f32) + (math.sin(angle as f64) as f32) * (1.6 as f32),
+            0.16 as f32, 1.00 as f32, 0.72 as f32, 0.20 as f32, 0.038 as f32, 2.0 as f32)
+        i = i + (1 as i32)
+    }
+    trust engine.play_clip(app, 0 as usize)
+}
+
+fn fire_enemy(game: mut Recubedoom, index: i32, time: f32) void = {
+    if @get(game.enemies, index as usize) is some enemy {
+        val dx: f32 = game.px - enemy.x
+        val dy: f32 = (EYE_HEIGHT + (0.1 as f32)) - (0.98 as f32)
+        val dz: f32 = game.pz - enemy.z
+        val length: f32 = math.sqrt((dx * dx + dy * dy + dz * dz) as f64) as f32
+        if length < (0.01 as f32) {
+            return
+        }
+        val spread: f32 = (math.sin((time * (3.7 as f32)) + (index as f32) * (1.7 as f32)) as f64) as f32
+        val nx: f32 = dx / length
+        val ny: f32 = dy / length
+        val nz: f32 = dz / length
+        add_bullet(game, enemy.x, 0.98 as f32, enemy.z,
+            nx * ENEMY_BULLET_SPEED + spread * (0.22 as f32),
+            ny * ENEMY_BULLET_SPEED,
+            nz * ENEMY_BULLET_SPEED - spread * (0.22 as f32),
+            4.2 as f32, false)
+        add_spark(game, enemy.x, 0.98 as f32, enemy.z,
+            nx * (1.1 as f32), 0.4 as f32, nz * (1.1 as f32),
+            0.18 as f32, 1.00 as f32, 0.24 as f32, 0.16 as f32,
+            0.10 as f32, 0.0 as f32)
+    }
+}
+
+fn update_timers(game: mut Recubedoom, dt: f32) void = {
+    if game.fire_cd > (0.0 as f32) {
+        game.fire_cd = game.fire_cd - dt
+    }
+    if game.muzzle > (0.0 as f32) {
+        game.muzzle = game.muzzle - dt
+    }
+    if game.hurt > (0.0 as f32) {
+        game.hurt = game.hurt - dt * (1.55 as f32)
+    }
+    if game.kill_flash > (0.0 as f32) {
+        game.kill_flash = game.kill_flash - dt * (2.8 as f32)
+    }
+    if game.shake > (0.0 as f32) {
+        game.shake = game.shake - dt * (2.4 as f32)
+    }
+    if game.recoil > (0.0 as f32) {
+        game.recoil = game.recoil - dt * (7.5 as f32)
+    }
+    if game.invuln > (0.0 as f32) {
+        game.invuln = game.invuln - dt
+    }
+}
+
+fn update_look(game: mut Recubedoom, app: engine.ExoApp, dt: f32) void = {
+    game.yaw = game.yaw - app.input_state.mouse_dx * (0.0021 as f32)
+    game.pitch = game.pitch - app.input_state.mouse_dy * (0.0021 as f32)
+    if is_key_held(app, sdl.SDL_SCANCODE_LEFT) {
+        game.yaw = game.yaw + PLAYER_TURN_SPEED * dt
+    }
+    if is_key_held(app, sdl.SDL_SCANCODE_RIGHT) {
+        game.yaw = game.yaw - PLAYER_TURN_SPEED * dt
+    }
+    if is_key_held(app, sdl.SDL_SCANCODE_UP) {
+        game.pitch = game.pitch + PLAYER_TURN_SPEED * (0.64 as f32) * dt
+    }
+    if is_key_held(app, sdl.SDL_SCANCODE_DOWN) {
+        game.pitch = game.pitch - PLAYER_TURN_SPEED * (0.64 as f32) * dt
+    }
+    val rx: f32 = engine.gamepad_axis(app, sdl.SDL_GAMEPAD_AXIS_RIGHTX)
+    val ry: f32 = engine.gamepad_axis(app, sdl.SDL_GAMEPAD_AXIS_RIGHTY)
+    if fabs_f32(rx) > (0.12 as f32) {
+        game.yaw = game.yaw - rx * (2.25 as f32) * dt
+    }
+    if fabs_f32(ry) > (0.12 as f32) {
+        game.pitch = game.pitch - ry * (1.45 as f32) * dt
+    }
+    if game.pitch > (1.14 as f32) {
+        game.pitch = 1.14 as f32
+    }
+    if game.pitch < (-1.14 as f32) {
+        game.pitch = -1.14 as f32
+    }
+}
+
+fn update_player(game: mut Recubedoom, app: engine.ExoApp, dt: f32) void = {
+    update_look(game, app, dt)
+    if game.state != (0 as i32) {
+        return
+    }
+    val fwd: mut f32 = 0.0 as f32
+    val strafe: mut f32 = 0.0 as f32
+    if is_key_held(app, sdl.SDL_SCANCODE_W) {
+        fwd = fwd + (1.0 as f32)
+    }
+    if is_key_held(app, sdl.SDL_SCANCODE_S) {
+        fwd = fwd - (1.0 as f32)
+    }
+    if is_key_held(app, sdl.SDL_SCANCODE_D) {
+        strafe = strafe + (1.0 as f32)
+    }
+    if is_key_held(app, sdl.SDL_SCANCODE_A) {
+        strafe = strafe - (1.0 as f32)
+    }
+    fwd = fwd - engine.gamepad_axis(app, sdl.SDL_GAMEPAD_AXIS_LEFTY)
+    strafe = strafe + engine.gamepad_axis(app, sdl.SDL_GAMEPAD_AXIS_LEFTX)
+    val length: f32 = math.sqrt((fwd * fwd + strafe * strafe) as f64) as f32
+    if length > (0.001 as f32) {
+        fwd = fwd / length
+        strafe = strafe / length
+    }
+    val fx: f32 = math.sin(game.yaw as f64) as f32
+    val fz: f32 = math.cos(game.yaw as f64) as f32
+    val rx: f32 = (0.0 as f32) - fz
+    val rz: f32 = fx
+    val sprint: mut f32 = 1.0 as f32
+    if is_key_held(app, sdl.SDL_SCANCODE_LSHIFT) {
+        sprint = 1.48 as f32
+    }
+    val step: f32 = PLAYER_SPEED * sprint * dt
+    val dx: f32 = (fx * fwd + rx * strafe) * step
+    val dz: f32 = (fz * fwd + rz * strafe) * step
+    if !blocked_circle(game.rows, game.px + dx, game.pz, PLAYER_RADIUS) {
+        game.px = game.px + dx
+    }
+    if !blocked_circle(game.rows, game.px, game.pz + dz, PLAYER_RADIUS) {
+        game.pz = game.pz + dz
+    }
+    if fabs_f32(fwd) + fabs_f32(strafe) > (0.05 as f32) {
+        game.walk = game.walk + dt * (10.5 as f32)
+    } else {
+        game.walk = game.walk + dt * (2.0 as f32)
+    }
+    val target_bob: f32 = (math.sin(game.walk as f64) as f32) * (0.035 as f32)
+    game.bob = game.bob + (target_bob - game.bob) * clampf(dt * (13.0 as f32), 0.0 as f32, 1.0 as f32)
+    val want_fire: bool = is_key_held(app, sdl.SDL_SCANCODE_SPACE)
+    || engine.mouse_button(app, 1 as u8)
+    || engine.gamepad_axis(app, sdl.SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > (0.45 as f32)
+    if want_fire && game.fire_cd <= (0.0 as f32) {
+        fire_player(game, app)
+    }
+}
+
+fn update_enemies(game: mut Recubedoom, app: engine.ExoApp, dt: f32, time: f32) void = {
+    val idx: mut usize = 0 as usize
+    for idx < @len(game.enemies) {
+        if @get(game.enemies, idx) is some enemy {
+            val e: mut Enemy = enemy
+            if e.alive {
+                if e.hit_flash > (0.0 as f32) {
+                    e.hit_flash = e.hit_flash - dt
+                }
+                if e.contact_cd > (0.0 as f32) {
+                    e.contact_cd = e.contact_cd - dt
+                }
+                val dx: f32 = game.px - e.x
+                val dz: f32 = game.pz - e.z
+                val distance: f32 = math.sqrt((dx * dx + dz * dz) as f64) as f32
+                if distance > (3.0 as f32) {
+                    val nx: f32 = dx / distance
+                    val nz: f32 = dz / distance
+                    val speed: f32 = ENEMY_SPEED + (idx as f32) * (0.055 as f32) + (game.wave as f32) * (0.045 as f32)
+                    val step: f32 = speed * dt
+                    val tx: f32 = e.x + nx * step
+                    val tz: f32 = e.z + nz * step
+                    val blocked_x: bool = blocked_circle(game.rows, tx, e.z, ENEMY_RADIUS * (0.82 as f32))
+                    val blocked_z: bool = blocked_circle(game.rows, e.x, tz, ENEMY_RADIUS * (0.82 as f32))
+                    if !blocked_x {
+                        e.x = tx
+                    }
+                    if !blocked_z {
+                        e.z = tz
+                    }
+                    if blocked_x && blocked_z {
+                        val side: f32 = (0.0 as f32) - nz
+                        val side_z: f32 = nx
+                        val dir: f32 = 1.0 as f32
+                        if (idx % (2 as usize)) == (0 as usize) {
+                            if blocked_circle(game.rows, e.x + side * step, e.z + side_z * step, ENEMY_RADIUS * (0.82 as f32)) {
+                                if !blocked_circle(game.rows, e.x - side * step, e.z - side_z * step, ENEMY_RADIUS * (0.82 as f32)) {
+                                    e.x = e.x - side * step
+                                    e.z = e.z - side_z * step
+                                }
+                            } else {
+                                e.x = e.x + side * step * dir
+                                e.z = e.z + side_z * step * dir
+                            }
+                        } else {
+                            if blocked_circle(game.rows, e.x - side * step, e.z - side_z * step, ENEMY_RADIUS * (0.82 as f32)) {
+                                if !blocked_circle(game.rows, e.x + side * step, e.z + side_z * step, ENEMY_RADIUS * (0.82 as f32)) {
+                                    e.x = e.x + side * step
+                                    e.z = e.z + side_z * step
+                                }
+                            } else {
+                                e.x = e.x - side * step * dir
+                                e.z = e.z - side_z * step * dir
+                            }
+                        }
+                    }
+                }
+                if distance < (0.98 as f32) && e.contact_cd <= (0.0 as f32) {
+                    damage_player(game, app, 8 as i32)
+                    e.contact_cd = 1.05 as f32
+                }
+                e.shoot_timer = e.shoot_timer - dt
+                if e.shoot_timer <= (0.0 as f32) && distance < (25.0 as f32) {
+                    if has_line_of_sight(game.rows, e.x, e.z, game.px, game.pz) {
+                        fire_enemy(game, idx as i32, time)
+                        e.shoot_timer = (1.45 as f32) + ((idx % (3 as usize)) as f32) * (0.34 as f32) + (game.wave as f32) * (0.04 as f32)
+                    }
+                }
+            }
+            @set(game.enemies, idx, e)
+        }
+        idx = idx + (1 as usize)
+    }
+}
+
+fn update_bullets(game: mut Recubedoom, app: engine.ExoApp, dt: f32) void = {
+    val next: mut list[Bullet] = []
+    for bullet in game.bullets {
+        val b: mut Bullet = bullet
+        b.x = b.x + b.vx * dt
+        b.y = b.y + b.vy * dt
+        b.z = b.z + b.vz * dt
+        b.life = b.life - dt
+        val remove: mut bool = b.life <= (0.0 as f32)
+        if !remove && (b.y <= (0.035 as f32) || (b.y < WALL_HEIGHT && is_wall_world(game.rows, b.x, b.z))) {
+            spawn_impact(game, b.x, clampf(b.y, 0.05 as f32, WALL_HEIGHT), b.z, b.friendly)
+            remove = true
+        }
+        if !remove && b.friendly {
+            val idx: mut usize = 0 as usize
+            for idx < @len(game.enemies) {
+                if @get(game.enemies, idx) is some enemy {
+                    val e: mut Enemy = enemy
+                    if e.alive && dist3(b.x, b.y, b.z, e.x, 0.98 as f32, e.z) < ENEMY_RADIUS + (0.14 as f32) {
+                        e.health = e.health - (1 as i32)
+                        e.hit_flash = 0.22 as f32
+                        spawn_impact(game, b.x, b.y, b.z, true)
+                        if e.health <= (0 as i32) {
+                            e.alive = false
+                            game.score = game.score + 100 + game.wave * (15 as i32)
+                            game.kills = game.kills + (1 as i32)
+                            game.kill_flash = 1.0 as f32
+                            spawn_explosion(game, e.x, 0.98 as f32, e.z, true)
+                            trust engine.play_sound(app)
+                        }
+                        @set(game.enemies, idx, e)
+                        remove = true
+                        break
+                    }
+                    @set(game.enemies, idx, e)
+                }
+                idx = idx + (1 as usize)
+            }
+        }
+        if !remove && !b.friendly {
+            val eye_y: f32 = EYE_HEIGHT + game.bob
+            if dist3(b.x, b.y, b.z, game.px, eye_y, game.pz) < (0.42 as f32) {
+                damage_player(game, app, 6 as i32)
+                remove = true
+            }
+        }
+        if !remove {
+            @append(next, b)
+        }
+    }
+    game.bullets = next
+}
+
+fn update_sparks(game: mut Recubedoom, dt: f32) void = {
+    val next: mut list[Spark] = []
+    for spark in game.sparks {
+        val s: mut Spark = spark
+        s.life = s.life - dt
+        if s.life > (0.0 as f32) {
+            s.x = s.x + s.vx * dt
+            s.y = s.y + s.vy * dt
+            s.z = s.z + s.vz * dt
+            s.vy = s.vy - s.gravity * dt
+            @append(next, s)
+        }
+    }
+    game.sparks = next
+}
+
+fn update_wave(game: mut Recubedoom, dt: f32) void = {
+    if game.state != (0 as i32) {
+        return
+    }
+    if count_alive(game) > (0 as i32) {
+        return
+    }
+    if game.wave_timer <= (0.0 as f32) {
+        game.wave_timer = 2.3 as f32
+        game.score = game.score + 150
+        game.kill_flash = 1.0 as f32
+        spawn_explosion(game, game.px, EYE_HEIGHT, game.pz, false)
+    } else {
+        game.wave_timer = game.wave_timer - dt
+        if game.wave_timer <= (0.0 as f32) {
+            game.wave = game.wave + (1 as i32)
+            game.health = game.health + (24 as i32)
+            if game.health > MAX_HEALTH {
+                game.health = MAX_HEALTH
+            }
+            spawn_wave(game)
+            game.wave_timer = 0.0 as f32
+        }
+    }
+}
+
+fn sync_camera(game: Recubedoom, app: mut engine.ExoApp, time: f32) void = {
+    app.camera.position = ecs.make_vec3(game.px, player_eye_y(game, time), game.pz)
+    app.camera.yaw = game.yaw
+    app.camera.pitch = game.pitch
+}
+
+fn sync_scene(game: Recubedoom, app: mut engine.ExoApp, time: f32) void = {
+    val spheres: mut list[ecs.SphereEntity] = []
+    val lights: mut list[ecs.PointLight] = []
+
+    val cp: f32 = math.cos(game.pitch as f64) as f32
+    val fx: f32 = (math.sin(game.yaw as f64) as f32) * cp
+    val fy: f32 = math.sin(game.pitch as f64) as f32
+    val fz: f32 = (math.cos(game.yaw as f64) as f32) * cp
+    val eye_y: f32 = player_eye_y(game, time)
+
+    if game.muzzle > (0.0 as f32) {
+        @append(spheres, ecs.make_sphere(
+                ecs.make_vec3(game.px + fx * (2.45 as f32), eye_y + fy * (2.45 as f32), game.pz + fz * (2.45 as f32)),
+                ecs.make_vec3(1.00 as f32, 0.78 as f32, 0.28 as f32),
+                0.068 as f32
+            ))
+        @append(lights, ecs.make_light(
+                ecs.make_vec3(game.px + fx * (3.6 as f32), eye_y + fy * (3.6 as f32), game.pz + fz * (3.6 as f32)),
+                ecs.make_vec3(1.00 as f32, 0.70 as f32, 0.26 as f32),
+                3.6 as f32,
+                7.0 as f32
+            ))
+    }
+
+    @append(lights, ecs.make_light(
+            ecs.make_vec3(world_x(9.0 as f32), 4.4 as f32, world_z(9.0 as f32)),
+            ecs.make_vec3(1.00 as f32, 0.85 as f32, 0.58 as f32),
+            1.90 as f32,
+            22.0 as f32
+        ))
+    @append(lights, ecs.make_light(
+            ecs.make_vec3(world_x(3.0 as f32), 3.4 as f32, world_z(15.0 as f32)),
+            ecs.make_vec3(0.18 as f32, 0.52 as f32, 1.00 as f32),
+            1.35 as f32,
+            16.0 as f32
+        ))
+    @append(lights, ecs.make_light(
+            ecs.make_vec3(world_x(16.0 as f32), 3.4 as f32, world_z(4.0 as f32)),
+            ecs.make_vec3(1.00 as f32, 0.18 as f32, 0.48 as f32),
+            1.35 as f32,
+            16.0 as f32
+        ))
+    @append(lights, ecs.make_light(
+            ecs.make_vec3(world_x(3.0 as f32), 3.15 as f32, world_z(8.0 as f32)),
+            ecs.make_vec3(0.62 as f32, 0.86 as f32, 1.00 as f32),
+            1.55 as f32,
+            14.0 as f32
+        ))
+
+    @append(spheres, ecs.make_sphere(
+            ecs.make_vec3(world_x(9.0 as f32), 4.25 as f32, world_z(9.0 as f32)),
+            ecs.make_vec3(1.00 as f32, 0.92 as f32, 0.68 as f32),
+            0.11 as f32
+        ))
+    @append(spheres, ecs.make_sphere(
+            ecs.make_vec3(world_x(3.0 as f32), 3.30 as f32, world_z(15.0 as f32)),
+            ecs.make_vec3(0.30 as f32, 0.72 as f32, 1.00 as f32),
+            0.09 as f32
+        ))
+    @append(spheres, ecs.make_sphere(
+            ecs.make_vec3(world_x(16.0 as f32), 3.30 as f32, world_z(4.0 as f32)),
+            ecs.make_vec3(1.00 as f32, 0.32 as f32, 0.62 as f32),
+            0.09 as f32
+        ))
+    @append(spheres, ecs.make_sphere(
+            ecs.make_vec3(world_x(3.0 as f32), 3.05 as f32, world_z(8.0 as f32)),
+            ecs.make_vec3(0.72 as f32, 0.92 as f32, 1.00 as f32),
+            0.09 as f32
+        ))
+
+    val dust: mut i32 = 0 as i32
+    for dust < 26 {
+        val bx: f32 = world_x(1.0 as f32) + rand01(dust * (17 as i32) + (3 as i32)) * (((MAP_SIZE - 2) as f32) * TILE)
+        val bz: f32 = world_z(1.0 as f32) + rand01(dust * (23 as i32) + (7 as i32)) * (((MAP_SIZE - 2) as f32) * TILE)
+        val by: f32 = (0.42 as f32) + rand01(dust * (31 as i32) + (11 as i32)) * (2.05 as f32)
+        val phase: f32 = (dust as f32) * (0.83 as f32)
+        @append(spheres, ecs.make_sphere(
+                ecs.make_vec3(
+                    bx + (math.sin((time * (0.27 as f32) + phase) as f64) as f32) * (0.48 as f32),
+                    by + (math.sin((time * (0.66 as f32) + phase * (1.4 as f32)) as f64) as f32) * (0.13 as f32),
+                    bz + (math.cos((time * (0.23 as f32) + phase) as f64) as f32) * (0.48 as f32)
+                ),
+                ecs.make_vec3(0.16 as f32, 0.48 as f32, 0.82 as f32),
+                (0.022 as f32) + rand01(dust * (13 as i32) + (5 as i32)) * (0.028 as f32)
+            ))
+        dust = dust + (1 as i32)
+    }
+
+    val enemy_lights: mut i32 = 0 as i32
+    val ei: mut i32 = 0 as i32
+    for ei < (@len(game.enemies) as i32) {
+        if @get(game.enemies, ei as usize) is some enemy {
+            if enemy.alive {
+                val bob: f32 = (math.sin((time * (3.1 as f32) + enemy.phase) as f64) as f32) * (0.075 as f32)
+                val ey: f32 = 0.98 as f32 + bob
+                val dir_x: f32 = game.px - enemy.x
+                val dir_z: f32 = game.pz - enemy.z
+                val dir_len: f32 = math.sqrt((dir_x * dir_x + dir_z * dir_z) as f64) as f32
+                val nx: f32 = dir_x / (dir_len + (0.0001 as f32))
+                val nz: f32 = dir_z / (dir_len + (0.0001 as f32))
+                val side_x: f32 = (0.0 as f32) - nz
+                val side_z: f32 = nx
+                val pulse: f32 = (0.86 as f32) + (math.sin((time * (8.0 as f32) + enemy.phase) as f64) as f32) * (0.14 as f32)
+                val flash: f32 = clampf(enemy.hit_flash * (6.0 as f32), 0.0 as f32, 1.0 as f32)
+                val shell_r: f32 = (0.30 as f32) + flash * (0.55 as f32)
+                val shell_g: f32 = (0.025 as f32) + flash * (0.55 as f32)
+                val shell_b: f32 = (0.055 as f32) + flash * (0.50 as f32)
+                @append(spheres, ecs.make_sphere(
+                        ecs.make_vec3(enemy.x, ey, enemy.z),
+                        ecs.make_vec3(shell_r, shell_g, shell_b),
+                        ENEMY_RADIUS
+                    ))
+                @append(spheres, ecs.make_sphere(
+                        ecs.make_vec3(enemy.x + nx * (0.43 as f32), ey + (0.01 as f32), enemy.z + nz * (0.43 as f32)),
+                        ecs.make_vec3(1.00 as f32 * pulse, 0.32 as f32 * pulse, 0.08 as f32 * pulse),
+                        0.22 as f32 + flash * (0.10 as f32)
+                    ))
+                @append(spheres, ecs.make_sphere(
+                        ecs.make_vec3(enemy.x + nx * (0.54 as f32) + side_x * (0.18 as f32), ey + (0.15 as f32), enemy.z + nz * (0.54 as f32) + side_z * (0.18 as f32)),
+                        ecs.make_vec3(1.00 as f32, 0.86 as f32, 0.66 as f32),
+                        0.068 as f32
+                    ))
+                @append(spheres, ecs.make_sphere(
+                        ecs.make_vec3(enemy.x + nx * (0.54 as f32) - side_x * (0.18 as f32), ey + (0.15 as f32), enemy.z + nz * (0.54 as f32) - side_z * (0.18 as f32)),
+                        ecs.make_vec3(1.00 as f32, 0.86 as f32, 0.66 as f32),
+                        0.068 as f32
+                    ))
+                if enemy_lights < (3 as i32) {
+                    @append(lights, ecs.make_light(
+                            ecs.make_vec3(enemy.x, ey + (0.15 as f32), enemy.z),
+                            ecs.make_vec3(1.00 as f32, 0.20 as f32, 0.08 as f32),
+                            1.15 as f32 + (game.wave as f32) * (0.05 as f32),
+                            6.5 as f32
+                        ))
+                    enemy_lights = enemy_lights + (1 as i32)
+                }
+            }
+        }
+        ei = ei + (1 as i32)
+    }
+
+    for bullet in game.bullets {
+        val seed: i32 = ((bullet.x * (11.0 as f32) + bullet.z * (23.0 as f32)) as i32)
+        val phase: f32 = (time * (13.0 as f32) + (seed as f32) * (0.3 as f32))
+        val jitter: f32 = (math.sin(phase as f64) as f32) * (0.02 as f32)
+        val r: mut f32 = 0.20 as f32
+        val g: mut f32 = 0.92 as f32
+        val b: mut f32 = 1.00 as f32
+        if !bullet.friendly {
+            r = 1.00 as f32
+            g = 0.24 as f32
+            b = 0.62 as f32
+        }
+        @append(spheres, ecs.make_sphere(
+                ecs.make_vec3(bullet.x, bullet.y + jitter, bullet.z),
+                ecs.make_vec3(r, g, b),
+                0.072 as f32
+            ))
+        @append(spheres, ecs.make_sphere(
+                ecs.make_vec3(bullet.x - bullet.vx * (0.012 as f32), bullet.y - bullet.vy * (0.012 as f32), bullet.z - bullet.vz * (0.012 as f32)),
+                ecs.make_vec3(r * (0.55 as f32), g * (0.55 as f32), b * (0.55 as f32)),
+                0.050 as f32
+            ))
+        @append(spheres, ecs.make_sphere(
+                ecs.make_vec3(bullet.x - bullet.vx * (0.024 as f32), bullet.y - bullet.vy * (0.024 as f32), bullet.z - bullet.vz * (0.024 as f32)),
+                ecs.make_vec3(r * (0.28 as f32), g * (0.28 as f32), b * (0.28 as f32)),
+                0.032 as f32
+            ))
+    }
+
+    for spark in game.sparks {
+        val t: f32 = clampf(spark.life / spark.max_life, 0.0 as f32, 1.0 as f32)
+        @append(spheres, ecs.make_sphere(
+                ecs.make_vec3(spark.x, spark.y, spark.z),
+                ecs.make_vec3(spark.r * (0.6 as f32 + t * (0.7 as f32)), spark.g * (0.6 as f32 + t * (0.7 as f32)), spark.b * (0.6 as f32 + t * (0.7 as f32))),
+                spark.size * (0.45 as f32 + t * (0.75 as f32))
+            ))
+    }
+
+    app.scene.spheres = spheres
+    app.scene.lights = lights
+}
+
+fn draw_crosshair(app: mut engine.ExoApp) void = {
+    val sw: f32 = app.config.width as f32
+    val sh: f32 = app.config.height as f32
+    val cx: f32 = sw * (0.5 as f32)
+    val cy: f32 = sh * (0.5 as f32)
+    val col = ecs.make_vec3(0.30 as f32, 0.95 as f32, 1.00 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (1.0 as f32), cy - (13.0 as f32), 2.0 as f32, 9.0 as f32, col, 0.92 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (1.0 as f32), cy + (4.0 as f32), 2.0 as f32, 9.0 as f32, col, 0.92 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (13.0 as f32), cy - (1.0 as f32), 9.0 as f32, 2.0 as f32, col, 0.92 as f32)
+    ecs.ui_rect(app.scene.ui, cx + (4.0 as f32), cy - (1.0 as f32), 9.0 as f32, 2.0 as f32, col, 0.92 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (1.5 as f32), cy - (1.5 as f32), 3.0 as f32, 3.0 as f32, ecs.make_vec3(1.00 as f32, 0.82 as f32, 0.30 as f32), 0.95 as f32)
+}
+
+fn draw_weapon(game: Recubedoom, app: mut engine.ExoApp) void = {
+    val sw: f32 = app.config.width as f32
+    val sh: f32 = app.config.height as f32
+    val sway_x: f32 = (math.sin((game.walk * (0.5 as f32)) as f64) as f32) * (5.0 as f32)
+    val kick: f32 = game.recoil * (18.0 as f32) + game.bob * (170.0 as f32)
+    val cx: f32 = sw * (0.5 as f32) + sway_x
+    val body = ecs.make_vec3(0.035 as f32, 0.060 as f32, 0.095 as f32)
+    val panel = ecs.make_vec3(0.075 as f32, 0.115 as f32, 0.170 as f32)
+    val edge = ecs.make_vec3(0.16 as f32, 0.82 as f32, 1.00 as f32)
+    val core = ecs.make_vec3(1.00 as f32, 0.52 as f32, 0.12 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (58.0 as f32), sh - (92.0 as f32) + kick, 116.0 as f32, 92.0 as f32, body, 0.94 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (38.0 as f32), sh - (112.0 as f32) + kick, 76.0 as f32, 32.0 as f32, panel, 0.96 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (18.0 as f32), sh - (178.0 as f32) + kick, 36.0 as f32, 82.0 as f32, panel, 0.96 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (62.0 as f32), sh - (100.0 as f32) + kick, 8.0 as f32, 68.0 as f32, edge, 0.90 as f32)
+    ecs.ui_rect(app.scene.ui, cx + (54.0 as f32), sh - (100.0 as f32) + kick, 8.0 as f32, 68.0 as f32, edge, 0.90 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (27.0 as f32), sh - (184.0 as f32) + kick, 54.0 as f32, 9.0 as f32, edge, 0.94 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (37.0 as f32), sh - (72.0 as f32) + kick, 74.0 as f32, 10.0 as f32, core, 0.92 as f32)
+    ecs.ui_rect(app.scene.ui, cx - (26.0 as f32), sh - (165.0 as f32) + kick, 52.0 as f32, 5.0 as f32, core, 0.82 as f32)
+    if game.muzzle > (0.0 as f32) {
+        val flash: f32 = clampf(game.muzzle / (0.085 as f32), 0.0 as f32, 1.0 as f32)
+        ecs.ui_rect(app.scene.ui, cx - (30.0 as f32), sh - (210.0 as f32) + kick, 60.0 as f32, 28.0 as f32, ecs.make_vec3(1.00 as f32, 0.86 as f32, 0.36 as f32), flash * (0.92 as f32))
+        ecs.ui_rect(app.scene.ui, cx - (16.0 as f32), sh - (220.0 as f32) + kick, 32.0 as f32, 46.0 as f32, ecs.make_vec3(1.00 as f32, 1.00 as f32, 0.82 as f32), flash * (0.82 as f32))
+    }
+}
+
+fn draw_damage_border(app: mut engine.ExoApp, alpha: f32) void = {
+    val sw: f32 = app.config.width as f32
+    val sh: f32 = app.config.height as f32
+    val t: f32 = 13.0 as f32
+    val color = ecs.make_vec3(0.82 as f32, 0.02 as f32, 0.04 as f32)
+    ecs.ui_rect(app.scene.ui, 0.0 as f32, 0.0 as f32, sw, t, color, alpha)
+    ecs.ui_rect(app.scene.ui, 0.0 as f32, sh - t, sw, t, color, alpha)
+    ecs.ui_rect(app.scene.ui, 0.0 as f32, 0.0 as f32, t, sh, color, alpha)
+    ecs.ui_rect(app.scene.ui, sw - t, 0.0 as f32, t, sh, color, alpha)
+}
+
+fn refresh_hud(game: Recubedoom, app: mut engine.ExoApp, time: f32) void = {
+    val sw: f32 = app.config.width as f32
+    val sh: f32 = app.config.height as f32
+    val hp: f32 = clampf((game.health as f32) / (MAX_HEALTH as f32), 0.0 as f32, 1.0 as f32)
+    ecs.ui_clear(app.scene.ui)
+    @snprintf(game.hud, 128 as usize, "WAVE {d}   SCORE {d}   KILLS {d}", { game.wave, game.score, game.kills })
+    ecs.ui_rect(app.scene.ui, 22.0 as f32, 20.0 as f32, 520.0 as f32, 46.0 as f32, ecs.make_vec3(0.010 as f32, 0.025 as f32, 0.060 as f32), 0.70 as f32)
+    ecs.ui_text(app.scene.ui, game.hud, 34.0 as f32, 30.0 as f32, 2.7 as f32, ecs.make_vec3(0.62 as f32, 0.92 as f32, 1.00 as f32), 1.0 as f32)
+
+    if game.fx_enabled {
+        ecs.ui_text(app.scene.ui, "F  POST-FX ON", sw - (250.0 as f32), 30.0 as f32, 1.9 as f32, ecs.make_vec3(0.32 as f32, 0.94 as f32, 1.00 as f32), 0.92 as f32)
+    } else {
+        ecs.ui_text(app.scene.ui, "F  POST-FX OFF", sw - (258.0 as f32), 30.0 as f32, 1.9 as f32, ecs.make_vec3(0.62 as f32, 0.66 as f32, 0.72 as f32), 0.92 as f32)
+    }
+
+    val bar_w: f32 = 250.0 as f32
+    ecs.ui_rect(app.scene.ui, 26.0 as f32, sh - (62.0 as f32), bar_w + (8.0 as f32), 28.0 as f32, ecs.make_vec3(0.04 as f32, 0.01 as f32, 0.02 as f32), 0.78 as f32)
+    val hr: f32 = 1.0 as f32 - hp * (0.55 as f32)
+    val hg: f32 = 0.18 as f32 + hp * (0.78 as f32)
+    val hb: f32 = 0.22 as f32
+    ecs.ui_rect(app.scene.ui, 30.0 as f32, sh - (58.0 as f32), bar_w * hp, 20.0 as f32, ecs.make_vec3(hr, hg, hb), 0.96 as f32)
+    ecs.ui_text(app.scene.ui, "INTEGRITY", 30.0 as f32, sh - (88.0 as f32), 1.8 as f32, ecs.make_vec3(0.58 as f32, 0.82 as f32, 0.95 as f32), 0.94 as f32)
+    ecs.ui_text(app.scene.ui, "R  REBOOT", sw - (250.0 as f32), sh - (44.0 as f32), 1.9 as f32, ecs.make_vec3(0.50 as f32, 0.62 as f32, 0.78 as f32), 0.90 as f32)
+    ecs.ui_text(app.scene.ui, "WASD MOVE   MOUSE LOOK   CLICK / SPACE FIRE", 26.0 as f32, sh - (118.0 as f32), 1.7 as f32, ecs.make_vec3(0.42 as f32, 0.58 as f32, 0.74 as f32), 0.88 as f32)
+
+    draw_crosshair(app)
+    if game.state == (0 as i32) {
+        draw_weapon(game, app)
+    }
+
+    val low: f32 = 1.0 as f32 - hp
+    val pulse: f32 = (math.sin((time * (7.0 as f32)) as f64) as f32) * (0.5 as f32) + (0.5 as f32)
+    val danger_alpha: f32 = game.hurt * (0.48 as f32) + low * low * (0.18 as f32) * pulse
+    if danger_alpha > (0.01 as f32) {
+        draw_damage_border(app, clampf(danger_alpha, 0.0 as f32, 1.0 as f32))
+    }
+
+    if game.state == (1 as i32) {
+        ecs.ui_rect(app.scene.ui, 0.0 as f32, 0.0 as f32, sw, sh, ecs.make_vec3(0.02 as f32, 0.0 as f32, 0.01 as f32), 0.58 as f32)
+        ecs.ui_text(app.scene.ui, "SYSTEM FAILURE", sw * (0.5 as f32) - (215.0 as f32), sh * (0.5 as f32) - (70.0 as f32), 4.0 as f32, ecs.make_vec3(1.00 as f32, 0.18 as f32, 0.16 as f32), 1.0 as f32)
+        @snprintf(game.msg, 128 as usize, "SCORE {d}   BEST {d}   PRESS R TO REBOOT", { game.score, game.best })
+        ecs.ui_text(app.scene.ui, game.msg, sw * (0.5 as f32) - (330.0 as f32), sh * (0.5 as f32) + (18.0 as f32), 2.1 as f32, ecs.make_vec3(0.92 as f32, 0.78 as f32, 0.72 as f32), 0.96 as f32)
+    } elif count_alive(game) == (0 as i32) {
+        ecs.ui_text(app.scene.ui, "WAVE CLEARED  -  REINFORCEMENTS INBOUND", sw * (0.5 as f32) - (420.0 as f32), sh * (0.5 as f32) - (150.0 as f32), 2.5 as f32, ecs.make_vec3(1.00 as f32, 0.80 as f32, 0.26 as f32), 0.95 as f32)
+    } elif game.health < (32 as i32) {
+        val a: f32 = 0.55 as f32 + pulse * (0.35 as f32)
+        ecs.ui_text(app.scene.ui, "WARNING  -  INTEGRITY CRITICAL", sw * (0.5 as f32) - (352.0 as f32), sh * (0.5 as f32) + (82.0 as f32), 2.2 as f32, ecs.make_vec3(1.00 as f32, 0.26 as f32, 0.18 as f32), a)
+    } elif time < (9.0 as f32) {
+        ecs.ui_text(app.scene.ui, "CUBEDOOM  //  NEON REMASTER", sw * (0.5 as f32) - (305.0 as f32), sh * (0.5 as f32) - (150.0 as f32), 2.3 as f32, ecs.make_vec3(0.62 as f32, 0.92 as f32, 1.00 as f32), 0.92 as f32)
+    }
+}
+
+fn apply_post_fx(game: Recubedoom, app: mut engine.ExoApp, time: f32) void = {
+    val hurt: f32 = clampf(game.hurt / (0.58 as f32), 0.0 as f32, 1.0 as f32)
+    val hp: f32 = clampf((game.health as f32) / (MAX_HEALTH as f32), 0.0 as f32, 1.0 as f32)
+    val low: f32 = 1.0 as f32 - hp
+    val flash: f32 = clampf(game.muzzle / (0.085 as f32), 0.0 as f32, 1.0 as f32)
+    val dead: mut f32 = 0.0 as f32
+    if game.state == (1 as i32) {
+        dead = 1.0 as f32
+    }
+    val breathe: f32 = (math.sin((time * (1.7 as f32)) as f64) as f32) * (0.012 as f32)
+
+    app.scene.render.post_process.enabled = game.fx_enabled
+    app.scene.render.post_process.bloom.enabled = true
+    app.scene.render.post_process.bloom.threshold = (0.78 as f32) - flash * (0.14 as f32) - game.kill_flash * (0.10 as f32)
+    app.scene.render.post_process.bloom.knee = 0.24 as f32
+    app.scene.render.post_process.bloom.intensity = (1.20 as f32) + flash * (0.95 as f32) + game.kill_flash * (0.95 as f32) + low * (0.28 as f32)
+    app.scene.render.post_process.bloom.radius = (1.34 as f32) + flash * (0.45 as f32) + game.kill_flash * (0.20 as f32)
+    app.scene.render.post_process.bloom.iterations = 3 as i32
+    app.scene.render.post_process.vignette.enabled = true
+    app.scene.render.post_process.vignette.intensity = (0.28 as f32) + hurt * (0.42 as f32) + low * (0.14 as f32) + dead * (0.20 as f32)
+    app.scene.render.post_process.vignette.smoothness = 0.58 as f32
+    if hurt > (0.02 as f32) || dead > (0.5 as f32) {
+        app.scene.render.post_process.vignette.color = ecs.make_vec3(0.26 as f32, 0.0 as f32, 0.01 as f32)
+    } else {
+        app.scene.render.post_process.vignette.color = ecs.make_vec3(0.0 as f32, 0.0 as f32, 0.0 as f32)
+    }
+    app.scene.render.post_process.exposure = (1.02 as f32) + breathe + flash * (0.055 as f32) - hurt * (0.14 as f32) - dead * (0.18 as f32)
+    app.scene.render.post_process.contrast = (1.10 as f32) + hurt * (0.16 as f32) + dead * (0.08 as f32)
+    app.scene.render.post_process.saturation = (1.12 as f32) - hurt * (0.42 as f32) - dead * (0.58 as f32)
+    app.scene.render.post_process.chromatic_aberration = (0.00065 as f32) + hurt * (0.0065 as f32) + dead * (0.0045 as f32) + flash * (0.0012 as f32)
+    app.scene.render.post_process.film_grain = (0.009 as f32) + hurt * (0.045 as f32) + low * (0.010 as f32) + dead * (0.025 as f32)
+    app.scene.render.post_process.fxaa = true
+}
+
+fn setup_postprocess(scene: mut ecs.Scene3D) void = {
+    scene.render.enable_reflections = true
+    scene.render.reflect_models = false
+    scene.render.enable_fxaa = true
+    scene.render.enable_light_glow = true
+    scene.render.ambient = 0.30 as f32
+    scene.render.reflection_plane = 0.0 as f32
+    scene.render.clear_top = ecs.make_vec3(0.004 as f32, 0.008 as f32, 0.028 as f32)
+    scene.render.clear_bottom = ecs.make_vec3(0.018 as f32, 0.030 as f32, 0.072 as f32)
+    scene.render.post_process.enabled = true
+    scene.render.post_process.bloom.enabled = true
+    scene.render.post_process.bloom.threshold = 0.78 as f32
+    scene.render.post_process.bloom.knee = 0.24 as f32
+    scene.render.post_process.bloom.intensity = 1.20 as f32
+    scene.render.post_process.bloom.radius = 1.34 as f32
+    scene.render.post_process.bloom.iterations = 3 as i32
+    scene.render.post_process.vignette.enabled = true
+    scene.render.post_process.vignette.intensity = 0.28 as f32
+    scene.render.post_process.vignette.smoothness = 0.58 as f32
+    scene.render.post_process.vignette.color = ecs.make_vec3(0.0 as f32, 0.0 as f32, 0.0 as f32)
+    scene.render.post_process.exposure = 1.02 as f32
+    scene.render.post_process.contrast = 1.10 as f32
+    scene.render.post_process.saturation = 1.12 as f32
+    scene.render.post_process.chromatic_aberration = 0.00065 as f32
+    scene.render.post_process.film_grain = 0.009 as f32
+    scene.render.post_process.fxaa = true
+}
+
+fn build_scene(rows: list[ref u8]) ecs.Scene3D = {
+    val scene: mut ecs.Scene3D = ecs.new_scene()
+    scene.gravity = 0.0 as f32
+    setup_postprocess(scene)
+    ecs.add_floor(scene, ecs.make_floor_sized(
+            0.0 as f32,
+            0.0 as f32,
+            (MAP_SIZE as f32) * TILE * (0.5 as f32),
+            (MAP_SIZE as f32) * TILE * (0.5 as f32),
+            (MAP_SIZE as f32) * TILE,
+            (MAP_SIZE as f32) * TILE,
+            ecs.make_vec3(0.014 as f32, 0.028 as f32, 0.062 as f32)
+        ))
+
+    val r: mut i32 = 0 as i32
+    for r < MAP_SIZE {
+        val c: mut i32 = 0 as i32
+        for c < MAP_SIZE {
+            if is_wall_cell(rows, c, r) {
+                val border: bool = r == (0 as i32) || r == (MAP_SIZE - (1 as i32)) || c == (0 as i32) || c == (MAP_SIZE - (1 as i32))
+                val accent: bool = ((c * (5 as i32) + r * (9 as i32)) % (19 as i32)) == (0 as i32)
+                val hot: bool = ((c * (11 as i32) + r * (3 as i32)) % (23 as i32)) == (0 as i32)
+                val tone: f32 = (0.82 as f32) + rand01(c * (31 as i32) + r * (17 as i32) + (5 as i32)) * (0.36 as f32)
+                val cr: mut f32 = 0.050 as f32 * tone
+                val cg: mut f32 = 0.068 as f32 * tone
+                val cb: mut f32 = 0.135 as f32 * tone
+                if border {
+                    cr = 0.042 as f32 * tone
+                    cg = 0.060 as f32 * tone
+                    cb = 0.122 as f32 * tone
+                } else {
+                    cr = 0.060 as f32 * tone
+                    cg = 0.062 as f32 * tone
+                    cb = 0.130 as f32 * tone
+                }
+                if accent {
+                    cr = 0.055 as f32
+                    cg = 0.52 as f32 * tone
+                    cb = 0.92 as f32 * tone
+                }
+                if hot {
+                    cr = 0.86 as f32 * tone
+                    cg = 0.12 as f32
+                    cb = 0.46 as f32 * tone
+                }
+                @append(scene.cubes, ecs.make_cube(
+                        ecs.make_vec3(world_x(c as f32), WALL_HEIGHT * (0.5 as f32), world_z(r as f32)),
+                        ecs.make_vec3(cr, cg, cb),
+                        TILE,
+                        0.0 as f32
+                    ))
+                if ((c * (7 as i32) + r * (11 as i32)) % (13 as i32)) == (0 as i32) {
+                    val lit_r: mut f32 = 0.28 as f32
+                    val lit_g: mut f32 = 0.94 as f32
+                    val lit_b: mut f32 = 1.00 as f32
+                    if hot {
+                        lit_r = 1.00 as f32
+                        lit_g = 0.38 as f32
+                        lit_b = 0.62 as f32
+                    }
+                    @append(scene.cubes, ecs.make_cube(
+                            ecs.make_vec3(world_x(c as f32), WALL_HEIGHT + (0.025 as f32), world_z(r as f32)),
+                            ecs.make_vec3(lit_r, lit_g, lit_b),
+                            0.12 as f32,
+                            0.0 as f32
+                        ))
+                }
+                if ((c * (7 as i32) + r * (13 as i32)) % (6 as i32)) == (0 as i32) {
+                    val module_r: mut f32 = 0.24 as f32
+                    val module_g: mut f32 = 0.90 as f32
+                    val module_b: mut f32 = 1.00 as f32
+                    if hot {
+                        module_r = 1.00 as f32
+                        module_g = 0.38 as f32
+                        module_b = 0.66 as f32
+                    } elif accent {
+                        module_r = 0.36 as f32
+                        module_g = 0.74 as f32
+                        module_b = 1.00 as f32
+                    }
+                    if !is_wall_cell(rows, c, r - (1 as i32)) {
+                        @append(scene.cubes, ecs.make_cube(
+                                ecs.make_vec3(world_x(c as f32), 1.36 as f32, world_z(r as f32) - TILE * (0.5 as f32)),
+                                ecs.make_vec3(module_r, module_g, module_b),
+                                0.16 as f32,
+                                0.0 as f32
+                            ))
+                    } elif !is_wall_cell(rows, c + (1 as i32), r) {
+                        @append(scene.cubes, ecs.make_cube(
+                                ecs.make_vec3(world_x(c as f32) + TILE * (0.5 as f32), 1.36 as f32, world_z(r as f32)),
+                                ecs.make_vec3(module_r, module_g, module_b),
+                                0.16 as f32,
+                                0.0 as f32
+                            ))
+                    } elif !is_wall_cell(rows, c, r + (1 as i32)) {
+                        @append(scene.cubes, ecs.make_cube(
+                                ecs.make_vec3(world_x(c as f32), 1.36 as f32, world_z(r as f32) + TILE * (0.5 as f32)),
+                                ecs.make_vec3(module_r, module_g, module_b),
+                                0.16 as f32,
+                                0.0 as f32
+                            ))
+                    } elif !is_wall_cell(rows, c - (1 as i32), r) {
+                        @append(scene.cubes, ecs.make_cube(
+                                ecs.make_vec3(world_x(c as f32) - TILE * (0.5 as f32), 1.36 as f32, world_z(r as f32)),
+                                ecs.make_vec3(module_r, module_g, module_b),
+                                0.16 as f32,
+                                0.0 as f32
+                            ))
+                    }
+                }
+            } elif ((c * (3 as i32) + r * (7 as i32)) % (29 as i32)) == (0 as i32) {
+                @append(scene.cubes, ecs.make_cube(
+                        ecs.make_vec3(world_x(c as f32), 0.035 as f32, world_z(r as f32)),
+                        ecs.make_vec3(0.18 as f32, 0.74 as f32, 1.00 as f32),
+                        0.075 as f32,
+                        0.0 as f32
+                    ))
+            }
+            c = c + (1 as i32)
+        }
+        r = r + (1 as i32)
+    }
+    return scene
+}
+
+pub fn (Recubedoom) on_start(game: mut self, app: mut engine.ExoApp) void = {
+    game.hud = @alloc(128 as usize) as ref u8
+    game.msg = @alloc(128 as usize) as ref u8
+    reset_state(game)
+    sync_camera(game, app, 0.0 as f32)
+    sync_scene(game, app, 0.0 as f32)
+    refresh_hud(game, app, 0.0 as f32)
+    apply_post_fx(game, app, 0.0 as f32)
+    trust @print("RECUBEDOOM: WASD move, mouse look, click/space fire, F toggles post-fx.\n", {})
+}
+
+pub fn (Recubedoom) on_update(game: mut self, app: mut engine.ExoApp, dt: f32, time: f32) void = {
+    update_timers(game, dt)
+    if game.state == (0 as i32) {
+        update_player(game, app, dt)
+        update_enemies(game, app, dt, time)
+        update_bullets(game, app, dt)
+        update_wave(game, dt)
+    } else {
+        update_look(game, app, dt)
+    }
+    update_sparks(game, dt)
+    sync_camera(game, app, time)
+    sync_scene(game, app, time)
+    refresh_hud(game, app, time)
+    apply_post_fx(game, app, time)
+}
+
+pub fn (Recubedoom) on_fixed_update(_: mut self, _: mut engine.ExoApp, _: f32) void = {}
+
+pub fn (Recubedoom) on_key_down(game: mut self, app: mut engine.ExoApp, key: i32, _: bool, _: u16) void = {
+    if key == sdl.SDL_SCANCODE_R {
+        reset_state(game)
+        sync_camera(game, app, 0.0 as f32)
+        sync_scene(game, app, 0.0 as f32)
+        refresh_hud(game, app, 0.0 as f32)
+    }
+    if key == sdl.SDL_SCANCODE_F {
+        game.fx_enabled = !game.fx_enabled
+    }
+}
+
+pub fn (Recubedoom) on_key_up(_: mut self, _: mut engine.ExoApp, _: i32, _: u16) void = {}
+
+pub fn (Recubedoom) on_mouse_move(_: mut self, _: mut engine.ExoApp, _: f32, _: f32, _: f32, _: f32) void = {}
+
+pub fn (Recubedoom) on_mouse_button(_: mut self, _: mut engine.ExoApp, _: u8, _: bool, _: u8, _: f32, _: f32) void = {}
+
+pub fn (Recubedoom) on_mouse_wheel(_: mut self, _: mut engine.ExoApp, _: f32, _: f32, _: f32, _: f32) void = {}
+
+pub fn (Recubedoom) on_text_input(_: mut self, _: mut engine.ExoApp, _: ref u8) void = {}
+
+pub fn (Recubedoom) on_window_resize(_: mut self, _: mut engine.ExoApp, _: i32, _: i32) void = {}
+
+pub fn (Recubedoom) on_focus_changed(_: mut self, _: mut engine.ExoApp, _: bool) void = {}
+
+pub fn (Recubedoom) on_gamepad_button(_: mut self, _: mut engine.ExoApp, _: i32, _: bool) void = {}
+
+pub fn (Recubedoom) on_gamepad_axis(_: mut self, _: mut engine.ExoApp, _: i32, _: f32) void = {}
+
+pub fn (Recubedoom) on_shutdown(game: mut self, _: mut engine.ExoApp) void = {
+    if game.hud != none {
+        trust @free(game.hud as ref void)
+        game.hud = none as ref u8
+    }
+    if game.msg != none {
+        trust @free(game.msg as ref void)
+        game.msg = none as ref u8
+    }
+}
+
+pub fn main() i32 = {
+    val rows: list[ref u8] = map_rows()
+    val scene: ecs.Scene3D = build_scene(rows)
+    val input_cfg: input.InputConfig = {
+        keys: rendering.default_key_bindings(),
+        mouse: {
+            enabled: true,
+            sensitivity_x: 0.0021 as f32,
+            sensitivity_y: 0.0021 as f32,
+            invert_y: false
+        },
+        text_input: false,
+        gamepad: true
+    }
+    val audio_cfg: audio.AudioBankConfig = {
+        master_volume: 82 as i32,
+        clips: [{
+                path: "./assets/example_sound.wav",
+                loops: 0 as i32,
+                volume: 76 as i32
+            }]
+    }
+
+    val builder: mut engine.ExoAppBuilder = engine.new_app()
+    engine.with_title(builder, "exo | RECUBEDOOM")
+    engine.with_resolution(builder, 1280 as i32, 720 as i32)
+    engine.with_shaders(builder, engine.default_shader_config())
+    engine.with_scene(builder, scene)
+    engine.with_default_camera(builder)
+    engine.with_input(builder, input_cfg)
+    engine.with_quit_key(builder, sdl.SDL_SCANCODE_ESCAPE)
+    engine.with_audio(builder, audio_cfg)
+
+    val app: engine.ExoApp = engine.build_app(builder)
+    val game: Recubedoom = make_game(rows)
+    return trust engine.run_app_with_events[Recubedoom](app, game)
+}
+
+test {
+    val rows = map_rows()
+    assert @len(rows) == (MAP_SIZE as usize)
+    assert cell_char(rows, 0 as i32, 0 as i32) == (35 as u8)
+    assert cell_char(rows, 1 as i32, 1 as i32) == (46 as u8)
+    assert is_wall_cell(rows, 0 as i32, 5 as i32)
+    assert !is_wall_cell(rows, 1 as i32, 1 as i32)
+    assert is_wall_world(rows, 0.1 as f32, 0.1 as f32)
+    assert !is_wall_world(rows, world_x(1.0 as f32), world_z(1.0 as f32))
+    val game: mut Recubedoom = make_game(rows)
+    reset_state(game)
+    assert game.health == MAX_HEALTH
+    assert @len(game.enemies) == (ENEMY_COUNT as usize)
+    assert game.state == (0 as i32)
+    assert game.wave == START_WAVE
+    assert count_alive(game) == ENEMY_COUNT
+}
