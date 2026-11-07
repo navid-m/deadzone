@@ -1,13 +1,13 @@
-val math      = use("std/math")
+val math       = use("std/math")
 val allocators = use("std/allocators")
-val mem       = use("../lib/exo/src/mem.sx")
-val emath     = use("../lib/exo/src/engine/math.sx")
-val ecs       = use("../lib/exo/src/ecs.sx")
-val engine    = use("../lib/exo/src/engine.sx")
-val rendering = use("../lib/exo/src/rendering.sx")
-val sdl       = use("../lib/exo/src/engine/sdl.sx")
-val input     = use("../lib/exo/src/engine/input.sx")
-val audio     = use("../lib/exo/src/engine/audio.sx")
+val mem        = use("../lib/exo/src/mem.sx")
+val emath      = use("../lib/exo/src/engine/math.sx")
+val ecs        = use("../lib/exo/src/ecs.sx")
+val engine     = use("../lib/exo/src/engine.sx")
+val rendering  = use("../lib/exo/src/rendering.sx")
+val sdl        = use("../lib/exo/src/engine/sdl.sx")
+val input      = use("../lib/exo/src/engine/input.sx")
+val audio      = use("../lib/exo/src/engine/audio.sx")
 
 val MAP_SIZE: i32 = 20
 val TILE: f32 = 2.4 as f32
@@ -1729,10 +1729,10 @@ pub fn main() i32 = {
     }
     val clips: mut list[audio.AudioClip] = mem.persistent[audio.AudioClip]()
     @append(clips, {
-        path: "./assets/example_sound.wav",
-        loops: 0 as i32,
-        volume: 76 as i32
-    })
+            path: "./assets/example_sound.wav",
+            loops: 0 as i32,
+            volume: 76 as i32
+        })
     val audio_cfg: audio.AudioBankConfig = {
         master_volume: 82 as i32,
         clips: clips
