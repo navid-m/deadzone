@@ -1,4 +1,6 @@
 val math      = use("std/math")
+val allocators = use("std/allocators")
+val mem       = use("../lib/exo/src/mem.sx")
 val emath     = use("../lib/exo/src/engine/math.sx")
 val ecs       = use("../lib/exo/src/ecs.sx")
 val engine    = use("../lib/exo/src/engine.sx")
@@ -124,8 +126,19 @@ fn is_key_held(app: engine.ExoApp, key: i32) bool = {
     return trust engine.key_held(app, key)
 }
 
+/// Allocate an empty list on the C heap. Use `free_heap_list` when replacing or
+/// shutting down the list.
+fn new_heap_list[T]() list[T] = {
+    val heap: allocators.HeapAllocator = @zeroed
+    return @listalloc[allocators.HeapAllocator, T](heap)?
+}
+
+fn free_heap_list[T](xs: list[T]) void = trust {
+    @listfree(xs)
+}
+
 fn map_rows() list[ref u8] = {
-    val rows: mut list[ref u8] = []
+    val rows: mut list[ref u8] = mem.persistent[ref u8]()
     @append(rows, "####################")
     @append(rows, "#....#.............#")
     @append(rows, "#.##.#.########.##.#")
@@ -243,7 +256,7 @@ fn count_alive(game: Recubedoom) i32 = {
 }
 
 fn spawn_wave(game: mut Recubedoom) void = {
-    val enemies: mut list[Enemy] = []
+    val enemies: mut list[Enemy] = new_heap_list[Enemy]()
     val i: mut i32 = 0 as i32
     for i < ENEMY_COUNT {
         val cx: mut i32 = 8 as i32
@@ -278,6 +291,7 @@ fn spawn_wave(game: mut Recubedoom) void = {
             })
         i = i + (1 as i32)
     }
+    trust free_heap_list[Enemy](game.enemies)
     game.enemies = enemies
 }
 
@@ -301,8 +315,10 @@ fn reset_state(game: mut Recubedoom) void = {
     game.shake = 0.0 as f32
     game.recoil = 0.0 as f32
     game.invuln = 2.2 as f32
-    game.bullets = []
-    game.sparks = []
+    trust free_heap_list[Bullet](game.bullets)
+    trust free_heap_list[Spark](game.sparks)
+    game.bullets = new_heap_list[Bullet]()
+    game.sparks = new_heap_list[Spark]()
     spawn_wave(game)
 }
 
@@ -319,9 +335,9 @@ fn make_game(rows: list[ref u8]) Recubedoom = {
         kills: 0 as i32,
         wave: START_WAVE,
         state: 0 as i32,
-        enemies: [],
-        bullets: [],
-        sparks: [],
+        enemies: new_heap_list[Enemy](),
+        bullets: new_heap_list[Bullet](),
+        sparks: new_heap_list[Spark](),
         fire_cd: 0.0 as f32,
         muzzle: 0.0 as f32,
         hurt: 0.0 as f32,
@@ -788,7 +804,7 @@ fn update_enemies(game: mut Recubedoom, app: engine.ExoApp, dt: f32, time: f32) 
 }
 
 fn update_bullets(game: mut Recubedoom, app: engine.ExoApp, dt: f32) void = {
-    val next: mut list[Bullet] = []
+    val next: mut list[Bullet] = new_heap_list[Bullet]()
     for bullet in game.bullets {
         val b: mut Bullet = bullet
         b.x = b.x + b.vx * dt
@@ -848,11 +864,12 @@ fn update_bullets(game: mut Recubedoom, app: engine.ExoApp, dt: f32) void = {
             @append(next, b)
         }
     }
+    trust free_heap_list[Bullet](game.bullets)
     game.bullets = next
 }
 
 fn update_sparks(game: mut Recubedoom, dt: f32) void = {
-    val next: mut list[Spark] = []
+    val next: mut list[Spark] = new_heap_list[Spark]()
     for spark in game.sparks {
         val s: mut Spark = spark
         s.life = s.life - dt
@@ -864,6 +881,7 @@ fn update_sparks(game: mut Recubedoom, dt: f32) void = {
             @append(next, s)
         }
     }
+    trust free_heap_list[Spark](game.sparks)
     game.sparks = next
 }
 
@@ -939,9 +957,9 @@ fn gun_model_transform(game: Recubedoom, time: f32) emath.Mat4 = {
 }
 
 fn sync_scene(game: Recubedoom, app: mut engine.ExoApp, time: f32) void = {
-    val spheres: mut list[ecs.SphereEntity] = []
-    val lights: mut list[ecs.PointLight] = []
-    val model_draws: mut list[ecs.ModelDraw] = []
+    val spheres: mut list[ecs.SphereEntity] = mem.scoped[ecs.SphereEntity]()
+    val lights: mut list[ecs.PointLight] = mem.scoped[ecs.PointLight]()
+    val model_draws: mut list[ecs.ModelDraw] = mem.scoped[ecs.ModelDraw]()
 
     val cp: f32 = math.cos(game.pitch as f64) as f32
     val fx: f32 = (math.sin(game.yaw as f64) as f32) * cp
@@ -1701,6 +1719,9 @@ pub fn (Recubedoom) on_shutdown(game: mut self, _: mut engine.ExoApp) void = {
         trust @free(game.msg as ref void)
         game.msg = none as ref u8
     }
+    trust free_heap_list[Enemy](game.enemies)
+    trust free_heap_list[Bullet](game.bullets)
+    trust free_heap_list[Spark](game.sparks)
 }
 
 pub fn main() i32 = {
@@ -1717,13 +1738,15 @@ pub fn main() i32 = {
         text_input: false,
         gamepad: true
     }
+    val clips: mut list[audio.AudioClip] = mem.persistent[audio.AudioClip]()
+    @append(clips, {
+        path: "./assets/example_sound.wav",
+        loops: 0 as i32,
+        volume: 76 as i32
+    })
     val audio_cfg: audio.AudioBankConfig = {
         master_volume: 82 as i32,
-        clips: [{
-                path: "./assets/example_sound.wav",
-                loops: 0 as i32,
-                volume: 76 as i32
-            }]
+        clips: clips
     }
 
     val builder: mut engine.ExoAppBuilder = engine.new_app()
