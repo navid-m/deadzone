@@ -1,3 +1,5 @@
+*.dSYM
+.DS_Store
 recubedoom-dev
 SPECTRE_LANGUAGE_REFERENCE.md
 lib/
