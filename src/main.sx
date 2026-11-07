@@ -1132,6 +1132,7 @@ fn sync_scene(game: Recubedoom, app: mut engine.ExoApp, time: f32) void = {
             gun_model_transform(game, time)
         )
         gun_draw.glow = 0.10 as f32
+        gun_draw.casts_shadow = false
         gun_draw.visible = game.state == (0 as i32)
         @append(model_draws, gun_draw)
     }
@@ -1143,7 +1144,7 @@ fn sync_scene(game: Recubedoom, app: mut engine.ExoApp, time: f32) void = {
         md = map_depth(game.map_asset)
     }
 
-    @append(lights, ecs.make_light(
+    @append(lights, ecs.make_shadow_light(
             ecs.make_vec3(MAP_MARGIN + mw * (0.52 as f32), 6.2 as f32, MAP_MARGIN + md * (0.52 as f32)),
             ecs.make_vec3(1.00 as f32, 0.85 as f32, 0.58 as f32),
             1.90 as f32,
@@ -1579,6 +1580,7 @@ fn apply_post_fx(game: Recubedoom, app: mut engine.ExoApp, time: f32) void = {
 
 fn setup_postprocess(scene: mut ecs.Scene3D) void = {
     scene.render.enable_reflections = true
+    scene.render.enable_shadows = true
     scene.render.reflect_models = false
     scene.render.enable_fxaa = true
     scene.render.enable_light_glow = true
