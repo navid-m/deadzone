@@ -1760,7 +1760,7 @@ pub fn main() i32 = {
     }
 
     val builder: mut engine.ExoAppBuilder = engine.new_app()
-    engine.with_title(builder, "exo | RECUBEDOOM")
+    engine.with_title(builder, "RECUBEDOOM")
     engine.with_resolution(builder, 1280 as i32, 720 as i32)
     engine.with_shaders(builder, engine.default_shader_config())
     engine.with_scene(builder, scene)
