@@ -1,6 +1,6 @@
 *.dSYM
 .DS_Store
-recubedoom-dev
+deadzone-dev
 SPECTRE_LANGUAGE_REFERENCE.md
 lib/
 std__*

@@ -4,12 +4,12 @@ spectre_version "v0.0.15"
 
 build release {
     flags "-release -dynamic"
-    output "./recubedoom"
+    output "./deadzone"
 }
 
 build dev {
     flags "-dynamic"
-    output "./recubedoom-dev"
+    output "./deadzone-dev"
 }
 
 dep "https://github.com/navid-m/exo.git"
