@@ -1750,7 +1750,7 @@ pub fn main() i32 = {
     }
     val clips: mut list[audio.AudioClip] = mem.persistent[audio.AudioClip]()
     @append(clips, {
-            path: "./assets/example_sound.wav",
+            path: "./assets/gunshot.mp3",
             loops: 0 as i32,
             volume: 76 as i32
         })
