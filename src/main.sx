@@ -1800,7 +1800,7 @@ pub fn (Deadzone) on_key_down(
         @snprintf(
             game.shot_path,
             128 as usize,
-            "./s-out/recubedoom-{d}.ppm",
+            "./deadzone-{d}.ppm",
             { app.frame as i32 }
         )
         engine.request_screenshot(app, game.shot_path)
